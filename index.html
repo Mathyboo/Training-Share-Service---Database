@@ -854,11 +854,9 @@ body.mobile-view .card{padding:12px}
       <div class="card">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>หลักสูตร</th><th>วันที่อบรม</th><th>รูปแบบ</th><th>วันที่ลงทะเบียน</th><th>สถานะ</th></tr></thead>
-            <tbody>
-              <tr><td><strong>ผู้สัมผัสอาหาร</strong></td><td>06/01/2025 – 06/02/2025</td><td><span class="badge badge-blue">ออนไลน์</span></td><td>05/15/2025</td><td><span class="badge badge-green">ลงทะเบียนแล้ว</span></td></tr>
-              <tr><td><strong>Service Excellence</strong></td><td>04/15/2025 – 04/16/2025</td><td><span class="badge badge-orange">สถานที่</span></td><td>04/01/2025</td><td><span class="badge badge-green">ผ่านการอบรม</span></td></tr>
-              <tr><td><strong>Safety Basics</strong></td><td>02/10/2025 – 02/11/2025</td><td><span class="badge badge-blue">ออนไลน์</span></td><td>01/28/2025</td><td><span class="badge badge-red">ยกเลิก</span></td></tr>
+            <thead><tr><th>หลักสูตร</th><th>วันที่ลงทะเบียน</th><th>รูปแบบ</th><th>รอบอบรม</th><th>สถานะ</th></tr></thead>
+            <tbody id="my-training-tbody">
+              <tr><td colspan="5" style="text-align:center;color:var(--text3);padding:24px">ยังไม่มีประวัติการขออบรม</td></tr>
             </tbody>
           </table>
         </div>
@@ -1658,20 +1656,26 @@ function startPolling() {
   _pollInterval = setInterval(async () => {
     if(!currentUser) return;
     try {
-      // Fix 2: ดึงข้อมูลใหม่จาก Google Sheet ทุก 10 วินาที — มือถือเห็นข้อมูลปัจจุบัน
       const result = await gasGet({ action: 'poll' });
       if (!result || result.error) return;
+      // Fix 3: อัปเดตทุก collection รวมถึง COURSES และ EXAM_SETS
+      // ทำให้มือถือเห็นข้อมูลที่ Admin อัปเดตจาก browser อื่น
+      if (result.courses)           { COURSES                = result.courses;           syncCoursesToCalendar(); }
+      if (result.examSets)          EXAM_SETS              = result.examSets;
       if (result.examRequests)      EXAM_REQUESTS          = result.examRequests;
       if (result.trainingRequests)  TRAINING_REQUESTS_DATA = result.trainingRequests;
       if (result.announcements)     ANNOUNCEMENTS          = result.announcements;
-      if (result.courses)           COURSES                = result.courses;
+      // Re-render หน้าที่เปิดอยู่
       if (currentPage === 'exam-requests')     renderExamRequests();
       if (currentPage === 'training-requests') renderTrainingRequests();
       if (currentPage === 'dashboard')         renderAnnouncements();
       if (currentPage === 'course-board')      buildCoursesGrid();
+      if (currentPage === 'manage-courses')    renderManageCourses();
+      if (currentPage === 'manage-exams')      renderManageExams();
       if (currentPage === 'user-announce')     renderUserAnnouncements();
       if (currentPage === 'my-exams')          buildExamsGrid();
-      // Fix 1+2: รีเฟรช session ทุก tick ป้องกัน timeout ขณะใช้งาน
+      if (currentPage === 'my-training')       buildMyTrainingHistory();
+      // รีเฟรช session timestamp
       saveSession();
     } catch(err) {}
   }, 10000);
@@ -1706,7 +1710,8 @@ function resetSessionTimer(){
 function saveSession(){
   if(!currentUser) return;
   try {
-    sessionStorage.setItem('tss_user', JSON.stringify({
+    // Fix 2: ใช้ localStorage แทน sessionStorage — ป้องกัน refresh หลุด
+    localStorage.setItem('tss_session', JSON.stringify({
       user: currentUser,
       ts: Date.now(),
       userState: { [currentUser.code]: { registeredCourses:[...registeredCourses], requestedExams:[...requestedExams] } }
@@ -1715,17 +1720,17 @@ function saveSession(){
 }
 async function restoreSession(){
   try {
-    const raw = sessionStorage.getItem('tss_user');
+    // Fix 2: อ่านจาก localStorage
+    const raw = localStorage.getItem('tss_session');
     if(!raw) return false;
     const saved = JSON.parse(raw);
-    // ถ้าเกิน 30 นาทีให้ล้างทิ้ง
     if(Date.now() - saved.ts > SESSION_TIMEOUT_MS){
-      sessionStorage.removeItem('tss_user');
+      localStorage.removeItem('tss_session');
       return false;
     }
     currentUser = saved.user;
-    // โหลดข้อมูลใหม่จาก GAS (Fix 2: ให้ข้อมูลเป็นปัจจุบันเสมอ)
     showToast('กำลังโหลดข้อมูล...','info');
+    // Fix 3: โหลดข้อมูลสดจาก GAS ทุกครั้งที่ restore — ทุก browser เห็นข้อมูลเดียวกัน
     await loadAllData();
     if(currentUser.role === 'admin'){
       const adminData = await gasGet({ action:'getAdminData' });
@@ -1746,7 +1751,6 @@ async function restoreSession(){
       TRAINING_REQUESTS_DATA = Array.isArray(myTrainReqs) ? myTrainReqs : [];
       if(myEmp && !myEmp.error) EMPLOYEES = [myEmp];
     }
-    // คืน userState
     if(saved.userState && saved.userState[currentUser.code]){
       const s = saved.userState[currentUser.code];
       registeredCourses = new Set(s.registeredCourses || []);
@@ -1762,7 +1766,7 @@ async function restoreSession(){
     return true;
   } catch(e) {
     console.error('restoreSession error:', e);
-    sessionStorage.removeItem('tss_user');
+    localStorage.removeItem('tss_session');
     return false;
   }
 }
@@ -1818,7 +1822,8 @@ function doLogout(){
   stopPolling();
   if(_sessionTimer) clearTimeout(_sessionTimer);
   saveUserState();
-  sessionStorage.removeItem('tss_user'); // Fix 1: ล้าง session
+  sessionStorage.removeItem('tss_user'); // legacy
+  localStorage.removeItem('tss_session'); // Fix 2: ล้าง session
   currentUser=null;
   document.getElementById('auth-screen').style.display='flex';
   document.getElementById('app').classList.remove('visible');
@@ -2023,7 +2028,29 @@ function doLogout(){
   document.getElementById('login-pass').value='';
 }
 
-// Fix 3: Toggle mobile compact view
+// Fix 1: ประวัติการขออบรม — render จาก TRAINING_REQUESTS_DATA จริง (ไม่ hardcode)
+function buildMyTrainingHistory(){
+  const tbody=document.getElementById('my-training-tbody');if(!tbody)return;
+  const myCode=currentUser?currentUser.code:'';
+  const myRows=TRAINING_REQUESTS_DATA.filter(r=>String(r.code)===String(myCode));
+  if(!myRows.length){
+    tbody.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:24px">ยังไม่มีประวัติการขออบรม</td></tr>';
+    return;
+  }
+  tbody.innerHTML=myRows.map(r=>{
+    const c=COURSES.find(x=>x.name===r.course);
+    const round=c?`${c.start||''} – ${c.end||''}`:'–';
+    const mode=c&&c.mode?c.mode.includes('ออนไลน์')?'<span class="badge badge-blue">ออนไลน์</span>':'<span class="badge badge-orange">สถานที่</span>':'<span class="badge badge-gray">–</span>';
+    const sClass=r.status==='การอบรมจบลงแล้ว'?'badge-green':r.status==='ยกเลิก'?'badge-red':r.status==='กำลังอบรม'?'badge-blue':'badge-orange';
+    return`<tr>
+      <td><strong>${r.course}</strong></td>
+      <td>${r.date||'–'}</td>
+      <td>${mode}</td>
+      <td>${round}</td>
+      <td><span class="badge ${sClass}">${r.status||'–'}</span></td>
+    </tr>`;
+  }).join('');
+}
 let _mobileView = window.innerWidth <= 600;
 function toggleMobileView(){
   _mobileView = !_mobileView;
@@ -2352,7 +2379,7 @@ function buildSidebar(nav){document.getElementById('sidebar-nav').innerHTML=`<di
 function navigateTo(page){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));const el=document.getElementById('page-'+page);const navEl=document.getElementById('nav-'+page);if(el)el.classList.add('active');if(navEl)navEl.classList.add('active');currentPage=page;}
 
 // ── USER PAGES ──
-function buildUserPages(){buildCoursesGrid();buildExamsGrid();buildUserProfile();buildMyResults();renderUserAnnouncements();}
+function buildUserPages(){buildCoursesGrid();buildExamsGrid();buildUserProfile();buildMyResults();renderUserAnnouncements();buildMyTrainingHistory();}
 
 function buildCoursesGrid(){
   const sC={'เปิดรับสมัคร':'#27AE60','อยู่ระหว่างอบรม':'#FF8C42','ปิดรับสมัคร':'#95A5A6'};
