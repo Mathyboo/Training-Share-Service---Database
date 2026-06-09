@@ -256,6 +256,28 @@ tr:hover td{background:#FAFBFC}
 .manual-card-title{font-family:var(--font-head);font-size:14px;font-weight:600;color:var(--text);margin-bottom:6px;line-height:1.4}
 .manual-card-meta{font-size:12px;color:var(--text3);margin-bottom:10px}
 .manual-card-actions{display:flex;gap:6px;flex-wrap:wrap}
+/* Fix 3: Mobile responsive */
+body.mobile-view .sidebar{width:56px;min-width:56px}
+body.mobile-view .s-title,body.mobile-view .s-sub,body.mobile-view .user-name,
+body.mobile-view .user-role{display:none!important}
+body.mobile-view .nav-item{padding:10px;justify-content:center}
+body.mobile-view .nav-item>span:last-child{display:none}
+body.mobile-view .sidebar-logo{justify-content:center}
+body.mobile-view .user-badge{justify-content:center}
+body.mobile-view .stats-grid,body.mobile-view .three-col,body.mobile-view .two-col{grid-template-columns:1fr!important}
+body.mobile-view .form-row{grid-template-columns:1fr!important}
+body.mobile-view .topbar{flex-direction:column;align-items:flex-start;gap:8px}
+body.mobile-view .main{font-size:13px}
+body.mobile-view .card{padding:12px}
+@media(max-width:600px){
+  .sidebar{width:56px!important;min-width:56px!important}
+  .s-title,.s-sub,.user-name,.user-role{display:none!important}
+  .nav-item{padding:10px!important;justify-content:center!important}
+  .nav-item>span:last-child{display:none!important}
+  .three-col,.two-col,.form-row{grid-template-columns:1fr!important}
+  .topbar{flex-direction:column!important;align-items:flex-start!important}
+  .main{font-size:13px}
+}
 </style>
 </head>
 <body>
@@ -379,6 +401,10 @@ tr:hover td{background:#FAFBFC}
           👁️ ดูมุมมอง User
         </button>
       </div>
+      <!-- Fix 3: Mobile view toggle -->
+      <button id="btn-mobile-view" class="btn btn-sm" style="width:100%;justify-content:center;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.6);border:1.5px solid rgba(255,255,255,0.15);margin-bottom:8px" onclick="toggleMobileView()">
+        📱 สลับมุมมองมือถือ
+      </button>
       <button id="undo-btn" class="btn btn-sm" style="width:100%;justify-content:center;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);border:1.5px solid rgba(255,255,255,0.2);margin-bottom:8px;display:none" onclick="doUndo()">
         ↺ Undo การกระทำล่าสุด
       </button>
@@ -1570,6 +1596,315 @@ tr:hover td{background:#FAFBFC}
 </div>
 
 <script>
+// ================================================================
+// GOOGLE APPS SCRIPT — CONFIG & API
+// ================================================================
+
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbxLaPLs9z-zY1aPjHmDJ4ERptT0kix_7tEm-5WAlg36a7Ergos4jPv1NJyP5svHB5yvrA/exec';
+
+// อ่านข้อมูลจาก Apps Script (GET)
+async function gasGet(params) {
+  try {
+    const url = GAS_URL + '?' + new URLSearchParams(params).toString();
+    const res = await fetch(url);
+    return await res.json();
+  } catch(err) {
+    console.error('gasGet error:', err);
+    return { error: err.message };
+  }
+}
+
+// เขียนข้อมูลไปยัง Apps Script (POST)
+async function gasPost(action, data) {
+  try {
+    const res = await fetch(GAS_URL, {
+      method: 'POST',
+      body:   JSON.stringify({ action, data }),
+    });
+    return await res.json();
+  } catch(err) {
+    console.error('gasPost error:', err);
+    return { error: err.message };
+  }
+}
+
+// โหลดข้อมูลสาธารณะทั้งหมด (COURSES, EXAM_SETS, ANNOUNCEMENTS, MANUALS)
+async function loadAllData() {
+  try {
+    showToast('กำลังโหลดข้อมูล...', 'info');
+    const result = await gasGet({ action: 'getAllData' });
+    if (result.error) throw new Error(result.error);
+    COURSES       = result.courses       || [];
+    EXAM_SETS     = result.examSets      || [];
+    ANNOUNCEMENTS = result.announcements || [];
+    MANUALS       = result.manuals       || [];
+    // แปลง CAL_EVENTS array → object
+    CAL_EVENTS = {};
+    (result.calEvents || []).forEach(ev => {
+      if (!CAL_EVENTS[ev.date]) CAL_EVENTS[ev.date] = [];
+      CAL_EVENTS[ev.date].push({ name: ev.name, cls: ev.cls||'other', color: ev.color||'' });
+    });
+    showToast('โหลดข้อมูลสำเร็จ', 'success');
+  } catch(err) {
+    console.error('loadAllData error:', err);
+    showToast('โหลดข้อมูลไม่สำเร็จ — ' + err.message, 'error');
+  }
+}
+
+// Polling ทุก 10 วินาที — ให้ทุกคนเห็นการเปลี่ยนแปลง
+let _pollInterval = null;
+function startPolling() {
+  if (_pollInterval) clearInterval(_pollInterval);
+  _pollInterval = setInterval(async () => {
+    if(!currentUser) return;
+    try {
+      // Fix 2: ดึงข้อมูลใหม่จาก Google Sheet ทุก 10 วินาที — มือถือเห็นข้อมูลปัจจุบัน
+      const result = await gasGet({ action: 'poll' });
+      if (!result || result.error) return;
+      if (result.examRequests)      EXAM_REQUESTS          = result.examRequests;
+      if (result.trainingRequests)  TRAINING_REQUESTS_DATA = result.trainingRequests;
+      if (result.announcements)     ANNOUNCEMENTS          = result.announcements;
+      if (result.courses)           COURSES                = result.courses;
+      if (currentPage === 'exam-requests')     renderExamRequests();
+      if (currentPage === 'training-requests') renderTrainingRequests();
+      if (currentPage === 'dashboard')         renderAnnouncements();
+      if (currentPage === 'course-board')      buildCoursesGrid();
+      if (currentPage === 'user-announce')     renderUserAnnouncements();
+      if (currentPage === 'my-exams')          buildExamsGrid();
+      // Fix 1+2: รีเฟรช session ทุก tick ป้องกัน timeout ขณะใช้งาน
+      saveSession();
+    } catch(err) {}
+  }, 10000);
+}
+
+function stopPolling() {
+  if (_pollInterval) { clearInterval(_pollInterval); _pollInterval = null; }
+}
+
+// ================================================================
+// ฟังก์ชัน Login/Logout แบบใหม่ใช้ Apps Script
+// ================================================================
+
+// Fix 1: Session timeout — 30 นาที ไม่มี action = logout อัตโนมัติ
+const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 นาที
+let _sessionTimer = null;
+function resetSessionTimer(){
+  if(_sessionTimer) clearTimeout(_sessionTimer);
+  _sessionTimer = setTimeout(()=>{
+    if(currentUser){
+      showToast('หมดเวลาใช้งาน กรุณา Login ใหม่','error');
+      setTimeout(()=>doLogout(), 2000);
+    }
+  }, SESSION_TIMEOUT_MS);
+}
+// รีเซ็ต timer ทุกครั้งที่มี user action
+['click','keydown','touchstart'].forEach(evt=>{
+  document.addEventListener(evt, ()=>{ if(currentUser) resetSessionTimer(); }, { passive:true });
+});
+
+// Fix 1: บันทึก session ลง sessionStorage — ป้องกัน refresh หลุด
+function saveSession(){
+  if(!currentUser) return;
+  try {
+    sessionStorage.setItem('tss_user', JSON.stringify({
+      user: currentUser,
+      ts: Date.now(),
+      userState: { [currentUser.code]: { registeredCourses:[...registeredCourses], requestedExams:[...requestedExams] } }
+    }));
+  } catch(e){}
+}
+async function restoreSession(){
+  try {
+    const raw = sessionStorage.getItem('tss_user');
+    if(!raw) return false;
+    const saved = JSON.parse(raw);
+    // ถ้าเกิน 30 นาทีให้ล้างทิ้ง
+    if(Date.now() - saved.ts > SESSION_TIMEOUT_MS){
+      sessionStorage.removeItem('tss_user');
+      return false;
+    }
+    currentUser = saved.user;
+    // โหลดข้อมูลใหม่จาก GAS (Fix 2: ให้ข้อมูลเป็นปัจจุบันเสมอ)
+    showToast('กำลังโหลดข้อมูล...','info');
+    await loadAllData();
+    if(currentUser.role === 'admin'){
+      const adminData = await gasGet({ action:'getAdminData' });
+      EMPLOYEES              = adminData.employees        || [];
+      TRAINING_REQUESTS_DATA = adminData.trainingRequests || [];
+      EXAM_REQUESTS          = adminData.examRequests     || [];
+      EXAM_RESULTS           = adminData.examResults      || [];
+    } else {
+      const code = currentUser.code;
+      const [myResults, myExamReqs, myTrainReqs, myEmp] = await Promise.all([
+        gasGet({ action:'getMyResults',          code }),
+        gasGet({ action:'getMyExamRequests',     code }),
+        gasGet({ action:'getMyTrainingRequests', code }),
+        gasGet({ action:'getEmployee',           code }),
+      ]);
+      EXAM_RESULTS           = Array.isArray(myResults)   ? myResults   : [];
+      EXAM_REQUESTS          = Array.isArray(myExamReqs)  ? myExamReqs  : [];
+      TRAINING_REQUESTS_DATA = Array.isArray(myTrainReqs) ? myTrainReqs : [];
+      if(myEmp && !myEmp.error) EMPLOYEES = [myEmp];
+    }
+    // คืน userState
+    if(saved.userState && saved.userState[currentUser.code]){
+      const s = saved.userState[currentUser.code];
+      registeredCourses = new Set(s.registeredCourses || []);
+      requestedExams    = new Set(s.requestedExams    || []);
+    } else {
+      loadUserState(currentUser.code);
+    }
+    document.getElementById('auth-screen').style.display='none';
+    document.getElementById('app').classList.add('visible');
+    setupUser();
+    startPolling();
+    resetSessionTimer();
+    return true;
+  } catch(e) {
+    console.error('restoreSession error:', e);
+    sessionStorage.removeItem('tss_user');
+    return false;
+  }
+}
+
+async function doLogin(){
+  const code = document.getElementById('login-code').value.trim().toUpperCase();
+  const pass = document.getElementById('login-pass').value.trim();
+  if(!code || !pass){ showToast('กรุณากรอกรหัส MyHR และรหัสผ่าน','error'); return; }
+  try {
+    showToast('กำลังเข้าสู่ระบบ...','info');
+    const result = await gasGet({ action:'login', code, password:pass });
+    if(!result.success){ showToast('รหัส MyHR หรือรหัสผ่านไม่ถูกต้อง','error'); return; }
+    currentUser = {
+      code:     result.code,
+      role:     result.role,
+      name:     result.name,
+      initials: result.initials || result.name.charAt(0),
+      position: result.position || '',
+    };
+    await loadAllData();
+    if(currentUser.role === 'admin'){
+      const adminData = await gasGet({ action:'getAdminData' });
+      EMPLOYEES              = adminData.employees         || [];
+      TRAINING_REQUESTS_DATA = adminData.trainingRequests  || [];
+      EXAM_REQUESTS          = adminData.examRequests      || [];
+      EXAM_RESULTS           = adminData.examResults       || [];
+    } else {
+      const [myResults, myExamReqs, myTrainReqs, myEmp] = await Promise.all([
+        gasGet({ action:'getMyResults',          code }),
+        gasGet({ action:'getMyExamRequests',     code }),
+        gasGet({ action:'getMyTrainingRequests', code }),
+        gasGet({ action:'getEmployee',           code }),
+      ]);
+      EXAM_RESULTS           = Array.isArray(myResults)   ? myResults   : [];
+      EXAM_REQUESTS          = Array.isArray(myExamReqs)  ? myExamReqs  : [];
+      TRAINING_REQUESTS_DATA = Array.isArray(myTrainReqs) ? myTrainReqs : [];
+      if(myEmp && !myEmp.error) EMPLOYEES = [myEmp];
+    }
+    loadUserState(code);
+    saveSession(); // Fix 1: บันทึก session
+    document.getElementById('auth-screen').style.display='none';
+    document.getElementById('app').classList.add('visible');
+    setupUser();
+    startPolling();
+    resetSessionTimer(); // Fix 1: เริ่มนับ 30 นาที
+  } catch(err) {
+    showToast('เกิดข้อผิดพลาด: ' + err.message,'error');
+    console.error('Login error:', err);
+  }
+}
+
+function doLogout(){
+  stopPolling();
+  if(_sessionTimer) clearTimeout(_sessionTimer);
+  saveUserState();
+  sessionStorage.removeItem('tss_user'); // Fix 1: ล้าง session
+  currentUser=null;
+  document.getElementById('auth-screen').style.display='flex';
+  document.getElementById('app').classList.remove('visible');
+  document.getElementById('login-code').value='';
+  document.getElementById('login-pass').value='';
+}
+
+// Fix 1: เมื่อโหลดหน้า ตรวจสอบ session ก่อนเสมอ
+window.addEventListener('load', async ()=>{
+  const restored = await restoreSession();
+  if(!restored){
+    document.getElementById('auth-screen').style.display='flex';
+  }
+  loadAppSettings();
+  renderCourseColsList();
+});
+
+// ================================================================
+// Override ฟังก์ชัน Save ให้บันทึกลง Google Sheet ด้วย
+// ================================================================
+
+// บันทึกหลักสูตรใหม่
+const _origSaveCourse = saveCourse;
+async function saveCourse(){
+  // เรียกฟังก์ชันเดิมก่อน (เพื่อ update UI)
+  _origSaveCourse();
+  // แล้วค่อย sync ไป Sheet (ส่ง course ล่าสุดที่เพิ่งเพิ่ม)
+  const latest = COURSES[COURSES.length-1];
+  if(latest) gasPost('saveCourse', {...latest, positions: (latest.positions||[]).join(',')});
+}
+
+// บันทึกประกาศใหม่
+const _origSaveAnnouncement = saveAnnouncement;
+async function saveAnnouncement(){
+  _origSaveAnnouncement();
+  const latest = ANNOUNCEMENTS[0]; // unshift → อยู่หัวสุด
+  if(latest) gasPost('saveAnnouncement', latest);
+}
+
+// บันทึกคำขออบรม
+const _origConfirmRegisterCourse = confirmRegisterCourse;
+async function confirmRegisterCourse(){
+  _origConfirmRegisterCourse();
+  const latest = TRAINING_REQUESTS_DATA[TRAINING_REQUESTS_DATA.length-1];
+  if(latest) gasPost('saveTrainingRequest', latest);
+}
+
+// บันทึกคำขอสอบ
+const _origConfirmRequestExam = confirmRequestExam;
+async function confirmRequestExam(){
+  _origConfirmRequestExam();
+  const latest = EXAM_REQUESTS[EXAM_REQUESTS.length-1];
+  if(latest) gasPost('saveExamRequest', latest);
+}
+
+// บันทึกผลสอบ
+const _origSubmitExam = submitExam;
+async function submitExam(){
+  _origSubmitExam();
+  const latest = EXAM_RESULTS[EXAM_RESULTS.length-1];
+  if(latest) gasPost('saveExamResult', latest);
+}
+
+// Fix 5: บันทึก import พนักงาน → sync ทั้งหมดไป Google Sheet ทันที
+const _origProcessRows = processRows;
+function processRows(headers, rows, fileName, trainingOnly){
+  const result = _origProcessRows(headers, rows, fileName, trainingOnly);
+  // Sync ไป Google Sheet ใน background — ใช้ setTimeout เพื่อให้ UI render ก่อน
+  setTimeout(async () => {
+    try {
+      showToast('กำลัง Sync ข้อมูลไป Google Sheet...', 'info');
+      const syncResult = await gasPost('bulkSaveEmployees', { employees: EMPLOYEES });
+      if(syncResult && syncResult.success){
+        showToast(`Sync สำเร็จ: ${syncResult.count} คน → Google Sheet แล้ว`, 'success');
+      } else {
+        showToast('Sync ไม่สำเร็จ: ' + (syncResult?.error||'unknown'), 'error');
+      }
+    } catch(err) {
+      console.error('Sync employees error:', err);
+      showToast('Sync ผิดพลาด: ' + err.message, 'error');
+    }
+  }, 800);
+  return result;
+}
+
+// ================================================================
 // ── DATA ──
 const USERS = {
   'ADMIN001': { pass:'admin', role:'admin', name:'ผู้ดูแลระบบ', initials:'อ', position:'Admin', idcard:'0000000000000' },
@@ -1688,6 +2023,21 @@ function doLogout(){
   document.getElementById('login-pass').value='';
 }
 
+// Fix 3: Toggle mobile compact view
+let _mobileView = window.innerWidth <= 600;
+function toggleMobileView(){
+  _mobileView = !_mobileView;
+  document.body.classList.toggle('mobile-view', _mobileView);
+  const btn = document.getElementById('btn-mobile-view');
+  if(btn) btn.textContent = _mobileView ? '🖥️ มุมมองปกติ' : '📱 มุมมองมือถือ';
+  try { localStorage.setItem('tss_mobile', _mobileView ? '1' : '0'); } catch(e){}
+}
+(function initMobileView(){
+  const saved = localStorage.getItem('tss_mobile');
+  _mobileView = saved !== null ? saved === '1' : window.innerWidth <= 600;
+  document.body.classList.toggle('mobile-view', _mobileView);
+})();
+
 // ── FIX 2: Dynamic EMP_COURSE_COLS management ──
 // EMP_COURSE_COLS is now mutable; admin can add/remove
 let EMP_COURSE_COLS=['ผู้ประกอบกิจการ','ผู้สัมผัสอาหาร','Safety For Staff','Service Mind','RMP1','RMP2','AMDP','SOT','SMT'];
@@ -1768,25 +2118,15 @@ function loadAppSettings(){
   }catch(e){}
 }
 // Update color hex labels live
-document.addEventListener('DOMContentLoaded',()=>{
-  ['primary','secondary','sidebar'].forEach(k=>{
-    const el=document.getElementById('set-'+k);if(!el)return;
-    el.addEventListener('input',()=>{const v=document.getElementById('set-'+k+'-val');if(v)v.textContent=el.value;});
-  });
-  loadAppSettings();
-  renderCourseColsList();
-});
-
-// ── FIX 1: Branch training report ──
+// Fix 4: นับพนักงานที่มีใบอนุญาต (ผู้ประกอบกิจการ OR ผู้สัมผัสอาหาร) ÷ พนักงานทั้งหมด
 function getBranchStats(){
-  // Group employees by WorkareaCode
   const byArea={};
   EMPLOYEES.forEach(e=>{
     const key=e.workareaCode||'N/A';
-    if(!byArea[key])byArea[key]={code:key,name:e.workarean||key,total:0,passOperator:0,passFood:0};
+    if(!byArea[key])byArea[key]={code:key,name:e.workarean||key,total:0,passOperator:0,passFood:0,passEither:new Set()};
     byArea[key].total++;
-    if(e.course1&&e.course1.trim())byArea[key].passOperator++;  // ผู้ประกอบกิจการ = course1
-    if(e.course2&&e.course2.trim())byArea[key].passFood++;      // ผู้สัมผัสอาหาร = course2
+    if(e.course1&&e.course1.trim()){byArea[key].passOperator++;byArea[key].passEither.add(e.code);}
+    if(e.course2&&e.course2.trim()){byArea[key].passFood++;byArea[key].passEither.add(e.code);}
   });
   return Object.values(byArea).sort((a,b)=>a.code.localeCompare(b.code));
 }
@@ -1795,21 +2135,18 @@ function renderBranchReport(){
   const el=document.getElementById('branch-report-table');if(!el)return;
   if(!stats.length){el.innerHTML='<p style="color:var(--text3)">ยังไม่มีข้อมูลพนักงาน</p>';return;}
   const rows=stats.map(s=>{
-    const passed=new Set();
-    // Count employees who passed BOTH ผู้ประกอบกิจการ AND ผู้สัมผัสอาหาร
-    EMPLOYEES.filter(e=>(e.workareaCode||'N/A')===s.code).forEach(e=>{
-      if(e.course1&&e.course1.trim()&&e.course2&&e.course2.trim())passed.add(e.code);
-    });
-    const pct=s.total>0?Math.round(passed.size/s.total*100):0;
-    const bar=`<div style="background:#E8E8E8;border-radius:4px;height:8px;width:100%;margin-top:3px"><div style="background:${pct>=80?'var(--green)':pct>=50?'var(--orange)':'var(--primary)'};height:8px;border-radius:4px;width:${pct}%"></div></div>`;
+    // Fix 4: ผู้มีใบอนุญาต = คนที่มีอย่างน้อย 1 ใบ (passEither) ÷ พนักงานทั้งหมด
+    const passCount=s.passEither.size;
+    const pct=s.total>0?(passCount/s.total*100).toFixed(2):0;
+    const bar=`<div style="background:#E8E8E8;border-radius:4px;height:8px;width:100%;margin-top:3px"><div style="background:${pct>=80?'var(--green)':pct>=50?'var(--orange)':'var(--primary)'};height:8px;border-radius:4px;width:${Math.min(pct,100)}%"></div></div>`;
     return`<tr>
       <td><strong>${s.code}</strong></td>
       <td>${s.name}</td>
       <td style="text-align:center">${s.total}</td>
       <td style="text-align:center">${s.passOperator}</td>
       <td style="text-align:center">${s.passFood}</td>
-      <td style="text-align:center">${passed.size}</td>
-      <td style="min-width:100px"><strong style="color:${pct>=80?'var(--green)':pct>=50?'var(--orange)':'var(--primary)'}">${pct}%</strong>${bar}</td>
+      <td style="text-align:center">${passCount}</td>
+      <td style="min-width:120px"><strong style="color:${pct>=80?'var(--green)':pct>=50?'var(--orange)':'var(--primary)'}">${pct}%</strong>${bar}</td>
     </tr>`;
   }).join('');
   el.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -1819,20 +2156,19 @@ function renderBranchReport(){
       <th style="padding:8px 10px;text-align:center;border-bottom:2px solid var(--border)">พนักงานทั้งหมด</th>
       <th style="padding:8px 10px;text-align:center;border-bottom:2px solid var(--border)">ผ่านผู้ประกอบกิจการ</th>
       <th style="padding:8px 10px;text-align:center;border-bottom:2px solid var(--border)">ผ่านผู้สัมผัสอาหาร</th>
-      <th style="padding:8px 10px;text-align:center;border-bottom:2px solid var(--border)">ผ่านทั้งหมด</th>
-      <th style="padding:8px 10px;text-align:center;border-bottom:2px solid var(--border)">% ผ่าน</th>
+      <th style="padding:8px 10px;text-align:center;border-bottom:2px solid var(--border)">มีใบอนุญาต (รวม)</th>
+      <th style="padding:8px 10px;text-align:center;border-bottom:2px solid var(--border)">% มีใบอนุญาต</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
 }
 function exportBranchReport(){
   const stats=getBranchStats();
-  const rows=[['รหัสสาขา','ชื่อสาขา','พนักงานทั้งหมด','ผ่านผู้ประกอบกิจการ','ผ่านผู้สัมผัสอาหาร','ผ่านทั้งหมด','% ผ่าน']];
+  const rows=[['รหัสสาขา','ชื่อสาขา','พนักงานทั้งหมด','ผ่านผู้ประกอบกิจการ','ผ่านผู้สัมผัสอาหาร','มีใบอนุญาต(รวม)','% มีใบอนุญาต']];
   stats.forEach(s=>{
-    const passed=new Set();
-    EMPLOYEES.filter(e=>(e.workareaCode||'N/A')===s.code).forEach(e=>{if(e.course1&&e.course1.trim()&&e.course2&&e.course2.trim())passed.add(e.code);});
-    const pct=s.total>0?Math.round(passed.size/s.total*100):0;
-    rows.push([s.code,s.name,s.total,s.passOperator,s.passFood,passed.size,pct+'%']);
+    const passCount=s.passEither.size;
+    const pct=s.total>0?(passCount/s.total*100).toFixed(2):0;
+    rows.push([s.code,s.name,s.total,s.passOperator,s.passFood,passCount,pct+'%']);
   });
   downloadCSV(rows,'branch_training_report.csv');
 }
